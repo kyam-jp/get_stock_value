@@ -1,11 +1,17 @@
 #!/e/ksk/tool/python/python.exe
 import datetime
 import jpholiday
+import holidays
 import calendar
+import pandas as pd
 import yfinance as yf
 import io
 from dateutil.relativedelta import relativedelta
 import csv
+
+# データ
+# ticker_list:tikerのリスト。各国まとめて管理
+# 
 
 # ティッカーを指定
 # 1306.T 国内ETF
@@ -15,59 +21,92 @@ import csv
 # 7244.T 市光工業
 # 7276.T 小糸製作所
 ticker_list=['1306.T','8316.T','7201.T','7261.T','7244.T',
-             '7276.T','VT'    ,'VWO'   ,'TSLA'  ,'INTC'  ,
-              'AMD'   ,'QCOM'  ,'TSM'   ,'TOK'   ,'JPY=X' ,
-             'AAPL'  ,'NVDA','ARM']
+             '7276.T',
+            'VT'     ,'VWO'   ,'TSLA'  ,'INTC'  , 'AMD'  ,
+             'QCOM'  ,'TSM'   ,'TOK'   ,'JPY=X' ,'AAPL'  ,
+             'NVDA'  ,'ARM']
 
 
-# 土日、祝日を判定する
-def is_bizday(day):
-
-   if day.weekday()>=5 or jpholiday.is_holiday(day):
+# 土日、祝日を判定する関数  0:休日 1:営業日
+def is_bizday_jp(day):
+    if day.weekday()>=5 or jpholiday.is_holiday(day):
         return 0
-   else:
+    else:
         return 1
 
-# 指定された月末営業日の日付を取得
-def get_day(year, month):
+def is_bizday_us(day):
+    us_holidays = holidays.US()
+    if day.weekday()>=5 or day in us_holidays:
+        return 0
+    else:
+        return 1
+
+# 各国における休日判定
+def is_bizday(country,day):
+    if country == 'JP':
+        return is_bizday_jp(day)
+    elif country == 'US':
+        return is_bizday_us(day)
+    else:
+        return 1 
+
+# 指定国の最終営業日を返す
+def get_day_bycountry(year, month, country):
     day = (calendar.monthrange(year, month)[1])
     yymmdd = datetime.date(year,month,day)
-    # 土日、祝日の場合
-    if is_bizday(yymmdd) == 0:
+    if is_bizday(country,yymmdd) == 0:
         # 1日ずらす
         yymmdd = yymmdd +datetime.timedelta(days=-1)  
         # もう一度判定
-        while(is_bizday(yymmdd) == 0):
+        while(is_bizday(country, yymmdd) == 0):
             yymmdd = yymmdd +datetime.timedelta(days=-1)
         return yymmdd
-
     else:
         return datetime.date(year,month,day)
-    
+
+# Yahoo Finance からデータを取得
 def get_data_yahoo(tiker_list, start,end):
     
     data = yf.download(tiker_list,start,end)
     close_data = data['Close']
-    print(close_data)
     return close_data
 
 # 指定された年の終値を取得
-def get_stock_table(start_day,end_day):
+def get_stock_table(ticker_list, start_day,end_day):
     # end 指定 1日前までを集計するので end_day を +1 しておく
     end_day = end_day+datetime.timedelta(days=1)
     df = get_data_yahoo(ticker_list,start=start_day,end=end_day)
     return df
 
-def get_month_end_days(start_day,end_day):
-    days=[]
+# 指定国の月末日を取得
+def get_month_end_days_bycountry(start_day,end_day,country):
+    days =[]
     current_day = start_day
     year = start_day.year
     current_month = start_day.month
-    days.append(current_day.isoformat())
-    while current_day <= end_day:
+    # 月末日を取得
+    while current_month <= end_day.month:
+        current_day = get_day_bycountry(current_day.year,current_month,country)
         current_month = current_month + 1
-        current_day = get_day(year,current_month)
         days.append(current_day.isoformat())
+    return days
+
+# 各月の営業末日を取得
+# 各国で末日が異なる場合はそのまま登録する
+def get_month_end_days(start_day,end_day):
+    days =[]
+    current_day = start_day
+    year = start_day.year
+    current_month = start_day.month
+    # 日本の月末日を登録
+    days.extend(get_month_end_days_bycountry(start_day,end_day,"JP"))
+    # USの月末日を登録
+    days.extend(get_month_end_days_bycountry(start_day,end_day,"US"))
+
+
+    # 重複データを取り除いておく
+    days = list(set(days)) 
+    days.sort()
     return days
 
 
@@ -83,21 +122,31 @@ def get_stock_val(year):
     print(data)
     ここまで
     """
+    # start_dayからend_dayまでの全日の株価を取得
+    # start_day:指定年の1/1。株価リスト取得の初日
+    # end_day:株価リスト取得最終日
 
-    start_day = get_day(year,1)
-    # 前月末日までを期間とする
-    end_month = datetime.datetime.now().month -1
-    end_day = get_day(year,end_month)
-    print(end_day)
+    start_day = datetime.date(year,1,1)
 
-    # 期間内の終値を取得
-    df_val = get_stock_table(start_day,end_day)
-
+    if datetime.datetime.now().year > year:
+        end_month = 12
+    else:
+    # 指定年内に実行したときは前月末日までを期間とする
+       end_month = datetime.datetime.now().month -1
+    
+    # 月末日を取得
+    last_day = calendar.monthrange(year,end_month)[1]
+    # フォーマットを整える
+    end_day = datetime.date(year,end_month,last_day)
+    # 期間内全日の終値を取得
+    df = get_stock_table(ticker_list, start_day,end_day) 
     # CSV 形式でバッファへ書き込む
-    csv_buffer =  io.StringIO()
-    df_val.to_csv(csv_buffer)
-
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer)
+ 
     #各月末日を取得
+    # 国ごとの稼働月末日を集計
+    # 異なる場合はそのまま集計対象とする
     days=[]
     days = get_month_end_days(start_day,end_day)
     # 末日の株価を抽出しCSVに書き込む
@@ -105,7 +154,7 @@ def get_stock_val(year):
 
 # 複数行を抜き出す
 # 縦横を入れ替えておく
-    vals = df_val.loc[days[0:len(days)-1],:].transpose()
+    vals = df.loc[days,:].transpose()
     # CSV 形式でファイルへ書き込む場合はこちら
     vals.to_csv('./out.csv')
    
